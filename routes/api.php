@@ -3,6 +3,7 @@
 use App\Http\Controllers\Api\V1\AccessControlController;
 use App\Http\Controllers\Api\V1\AuditEventController;
 use App\Http\Controllers\Api\V1\AuthController;
+use App\Http\Controllers\Api\V1\BusinessController;
 use App\Http\Controllers\Api\V1\CallLogController;
 use App\Http\Controllers\Api\V1\DashboardController;
 use App\Http\Controllers\Api\V1\FollowUpController;
@@ -46,10 +47,20 @@ Route::prefix('v1')->group(function () {
             Route::post('/check-duplicate', [LeadController::class, 'checkDuplicate']);
             Route::post('/import', [LeadController::class, 'import'])->middleware('permission:leads.import');
             Route::get('/export', [LeadController::class, 'export'])->middleware('permission:leads.export');
+            Route::post('/bulk-assign', [LeadController::class, 'bulkAssign'])->middleware('permission:leads.assign');
             Route::get('/{id}', [LeadController::class, 'show'])->middleware('permission:leads.view_assigned');
             Route::put('/{id}', [LeadController::class, 'update'])->middleware('permission:leads.update');
             Route::delete('/{id}', [LeadController::class, 'destroy'])->middleware('permission:leads.delete');
             Route::post('/{id}/assign', [LeadController::class, 'assign'])->middleware('permission:leads.assign');
+        });
+
+        // Businesses & Custom Fields
+        Route::prefix('businesses')->group(function () {
+            Route::get('/', [BusinessController::class, 'index']);
+            Route::post('/', [BusinessController::class, 'store']);
+            Route::get('/{id}', [BusinessController::class, 'show']);
+            Route::put('/{id}', [BusinessController::class, 'update']);
+            Route::delete('/{id}', [BusinessController::class, 'destroy']);
         });
 
         // Calling & Call Outcomes

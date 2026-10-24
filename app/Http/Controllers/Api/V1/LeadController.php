@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api\V1;
 
 use App\Http\Controllers\Controller;
 use App\Models\AuditEvent;
+use App\Models\Business;
 use App\Models\Lead;
 use App\Models\LeadActivity;
 use App\Models\LeadNote;
@@ -13,6 +14,7 @@ use App\Models\User;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class LeadController extends Controller
@@ -25,7 +27,11 @@ class LeadController extends Controller
         $user = $request->user();
         $tenantId = $user->tenant_id;
 
-        $query = Lead::where('tenant_id', $tenantId)->with(['owner:id,name,email', 'team:id,name']);
+        $query = Lead::where('tenant_id', $tenantId)->with([
+            'owner:id,name,email',
+            'team:id,name',
+            'business:id,name,slug,custom_columns',
+        ]);
 
         // Data Scope Enforcement:
         if ($user->isTelecaller()) {
@@ -57,6 +63,9 @@ class LeadController extends Controller
         }
 
         // Filters
+        if ($businessId = $request->input('business_id')) {
+            $query->where('business_id', $businessId);
+        }
         if ($status = $request->input('status')) {
             $query->where('status', $status);
         }
@@ -105,6 +114,7 @@ class LeadController extends Controller
         $user = $request->user();
         $lead = Lead::where('tenant_id', $user->tenant_id)
             ->with([
+                'business:id,name,slug,custom_columns',
                 'owner:id,name,email,phone',
                 'team:id,name',
                 'creator:id,name',
@@ -136,6 +146,7 @@ class LeadController extends Controller
     {
         $user = $request->user();
         $validated = $request->validate([
+            'business_id' => 'nullable|exists:businesses,id',
             'first_name' => 'required|string|max:100',
             'last_name' => 'nullable|string|max:100',
             'phone' => 'required|string|max:30',
@@ -148,6 +159,7 @@ class LeadController extends Controller
             'team_id' => 'nullable|exists:teams,id',
             'estimated_value' => 'nullable|numeric|min:0',
             'notes' => 'nullable|string',
+            'custom_fields' => 'nullable|array',
             'ignore_duplicate_warning' => 'nullable|boolean',
         ]);
 
@@ -228,7 +240,7 @@ class LeadController extends Controller
         return response()->json([
             'success' => true,
             'message' => 'Lead created successfully.',
-            'data' => $lead->load(['owner', 'team']),
+            'data' => $lead->load(['owner', 'team', 'business']),
         ], 201);
     }
 
@@ -248,6 +260,7 @@ class LeadController extends Controller
         }
 
         $validated = $request->validate([
+            'business_id' => 'nullable|exists:businesses,id',
             'first_name' => 'sometimes|required|string|max:100',
             'last_name' => 'nullable|string|max:100',
             'phone' => 'sometimes|required|string|max:30',
@@ -260,6 +273,7 @@ class LeadController extends Controller
             'team_id' => 'nullable|exists:teams,id',
             'estimated_value' => 'nullable|numeric|min:0',
             'notes' => 'nullable|string',
+            'custom_fields' => 'nullable|array',
         ]);
 
         $oldValues = $lead->toArray();
@@ -302,7 +316,7 @@ class LeadController extends Controller
         return response()->json([
             'success' => true,
             'message' => 'Lead updated successfully.',
-            'data' => $lead->load(['owner', 'team']),
+            'data' => $lead->load(['owner', 'team', 'business']),
         ]);
     }
 
@@ -427,7 +441,7 @@ class LeadController extends Controller
     }
 
     /**
-     * Import leads from CSV text or file upload with preview and validation.
+     * Import leads from CSV text or file upload with preview, validation, and business custom columns.
      */
     public function import(Request $request): JsonResponse
     {
@@ -435,7 +449,22 @@ class LeadController extends Controller
         $request->validate([
             'csv_content' => 'required_without:file|string',
             'file' => 'required_without:csv_content|file|mimes:csv,txt|max:5120',
+            'business_id' => 'nullable|exists:businesses,id',
         ]);
+
+        $businessId = $request->input('business_id');
+        $business = null;
+        $customColKeys = [];
+
+        if ($businessId) {
+            $business = Business::where('tenant_id', $user->tenant_id)->find($businessId);
+            if ($business && !empty($business->custom_columns)) {
+                foreach ($business->custom_columns as $cc) {
+                    $customColKeys[strtolower(trim($cc['key']))] = $cc['key'];
+                    $customColKeys[strtolower(trim($cc['label']))] = $cc['key'];
+                }
+            }
+        }
 
         $content = $request->hasFile('file')
             ? file_get_contents($request->file('file')->getRealPath())
@@ -449,8 +478,8 @@ class LeadController extends Controller
             ], 422);
         }
 
-        $header = str_getcsv(array_shift($lines));
-        $header = array_map(fn($h) => strtolower(trim($h)), $header);
+        $headerRaw = str_getcsv(array_shift($lines));
+        $header = array_map(fn($h) => strtolower(trim($h)), $headerRaw);
 
         $colMap = [
             'first_name' => array_search('first_name', $header) !== false ? array_search('first_name', $header) : array_search('name', $header),
@@ -461,6 +490,7 @@ class LeadController extends Controller
             'status' => array_search('status', $header),
             'source' => array_search('source', $header),
             'estimated_value' => array_search('estimated_value', $header) !== false ? array_search('estimated_value', $header) : array_search('value', $header),
+            'notes' => array_search('notes', $header),
         ];
 
         if ($colMap['phone'] === false) {
@@ -468,6 +498,15 @@ class LeadController extends Controller
                 'success' => false,
                 'message' => "CSV must include a 'phone' or 'mobile' header column.",
             ], 422);
+        }
+
+        // Identify custom column positions
+        $customFieldIndices = [];
+        foreach ($header as $colIdx => $headerName) {
+            if (!in_array($colIdx, $colMap, true)) {
+                $targetKey = $customColKeys[$headerName] ?? Str::slug($headerName, '_');
+                $customFieldIndices[$colIdx] = $targetKey;
+            }
         }
 
         $imported = 0;
@@ -503,9 +542,19 @@ class LeadController extends Controller
             $status = $colMap['status'] !== false ? trim($cols[$colMap['status']] ?? 'New') : 'New';
             $source = $colMap['source'] !== false ? trim($cols[$colMap['source']] ?? 'CSV Import') : 'CSV Import';
             $val = $colMap['estimated_value'] !== false ? (float) ($cols[$colMap['estimated_value']] ?? 0) : null;
+            $notes = $colMap['notes'] !== false ? trim($cols[$colMap['notes']] ?? '') : null;
+
+            // Extract custom fields
+            $rowCustomFields = [];
+            foreach ($customFieldIndices as $idx => $key) {
+                if (isset($cols[$idx]) && trim($cols[$idx]) !== '') {
+                    $rowCustomFields[$key] = trim($cols[$idx]);
+                }
+            }
 
             Lead::create([
                 'tenant_id' => $user->tenant_id,
+                'business_id' => $business?->id,
                 'first_name' => $firstName ?: 'Lead',
                 'last_name' => $lastName,
                 'phone' => $phone,
@@ -514,19 +563,22 @@ class LeadController extends Controller
                 'status' => $status ?: 'New',
                 'source' => $source ?: 'CSV Import',
                 'estimated_value' => $val,
+                'notes' => $notes,
+                'custom_fields' => !empty($rowCustomFields) ? $rowCustomFields : null,
                 'created_by' => $user->id,
             ]);
 
             $imported++;
         }
 
+        $businessName = $business ? " for business '{$business->name}'" : '';
         AuditEvent::log(
             $user->tenant_id,
             $user->id,
             'leads_imported',
             'Lead',
             null,
-            "CSV Lead Import by {$user->name}: {$imported} imported, {$skipped} skipped."
+            "CSV Lead Import{$businessName} by {$user->name}: {$imported} imported, {$skipped} skipped."
         );
 
         return response()->json([
@@ -536,6 +588,134 @@ class LeadController extends Controller
                 'imported_count' => $imported,
                 'skipped_count' => $skipped,
                 'errors' => $errors,
+                'business_id' => $business?->id,
+                'business_name' => $business?->name,
+            ],
+        ]);
+    }
+
+    /**
+     * Bulk assign leads to a telecaller by index range (e.g. 1 to 8, 12 to 22), count, or explicit IDs.
+     */
+    public function bulkAssign(Request $request): JsonResponse
+    {
+        $user = $request->user();
+        $tenantId = $user->tenant_id;
+
+        $validated = $request->validate([
+            'telecaller_id' => 'required|exists:users,id',
+            'business_id' => 'nullable|exists:businesses,id',
+            'status' => 'nullable|string',
+            'mode' => 'required|in:range,count,ids',
+            'from_index' => 'required_if:mode,range|nullable|integer|min:1',
+            'to_index' => 'required_if:mode,range|nullable|integer|min:1',
+            'count' => 'required_if:mode,count|nullable|integer|min:1|max:5000',
+            'lead_ids' => 'required_if:mode,ids|nullable|array',
+            'lead_ids.*' => 'integer|exists:leads,id',
+            'reason' => 'nullable|string|max:255',
+        ]);
+
+        $telecaller = User::where('tenant_id', $tenantId)->findOrFail($validated['telecaller_id']);
+
+        $query = Lead::where('tenant_id', $tenantId);
+
+        if (!empty($validated['business_id'])) {
+            $query->where('business_id', $validated['business_id']);
+        }
+
+        if (!empty($validated['status'])) {
+            if ($validated['status'] === 'unassigned') {
+                $query->whereNull('owner_id');
+            } else {
+                $query->where('status', $validated['status']);
+            }
+        } else {
+            // Default: unassigned leads
+            $query->whereNull('owner_id');
+        }
+
+        $query->orderBy('id', 'asc');
+
+        $leadsToAssign = collect();
+
+        if ($validated['mode'] === 'range') {
+            $from = (int) $validated['from_index'];
+            $to = (int) $validated['to_index'];
+            if ($to < $from) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Ending index (to_index) must be greater than or equal to starting index (from_index).',
+                ], 422);
+            }
+            $offset = $from - 1;
+            $limit = $to - $from + 1;
+            $leadsToAssign = $query->skip($offset)->take($limit)->get();
+        } elseif ($validated['mode'] === 'count') {
+            $leadsToAssign = $query->take((int) $validated['count'])->get();
+        } elseif ($validated['mode'] === 'ids') {
+            $leadsToAssign = Lead::where('tenant_id', $tenantId)
+                ->whereIn('id', $validated['lead_ids'])
+                ->get();
+        }
+
+        if ($leadsToAssign->isEmpty()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'No eligible unassigned leads found matching the selected range or criteria.',
+            ], 404);
+        }
+
+        $assignedCount = count($leadsToAssign);
+        $reason = $validated['reason'] ?? 'Bulk assignment by ' . $user->name;
+
+        DB::transaction(function () use ($leadsToAssign, $telecaller, $user, $reason) {
+            $leadIds = $leadsToAssign->pluck('id')->toArray();
+
+            Lead::whereIn('id', $leadIds)->update([
+                'owner_id' => $telecaller->id,
+                'status' => DB::raw("CASE WHEN status = 'New' THEN 'Assigned' ELSE status END"),
+                'updated_by' => $user->id,
+                'updated_at' => now(),
+            ]);
+
+            foreach ($leadsToAssign as $l) {
+                LeadActivity::create([
+                    'tenant_id' => $user->tenant_id,
+                    'lead_id' => $l->id,
+                    'user_id' => $user->id,
+                    'type' => 'assignment',
+                    'description' => "Lead assigned to {$telecaller->name} in bulk batch. Reason: {$reason}",
+                ]);
+            }
+
+            Notification::create([
+                'tenant_id' => $user->tenant_id,
+                'user_id' => $telecaller->id,
+                'title' => 'New Leads Assigned',
+                'message' => count($leadIds) . " new leads have been assigned to you by {$user->name}.",
+                'type' => 'assignment',
+                'link' => '/leads',
+            ]);
+
+            AuditEvent::log(
+                $user->tenant_id,
+                $user->id,
+                'leads_bulk_assigned',
+                'Lead',
+                null,
+                "Bulk assigned " . count($leadIds) . " leads to {$telecaller->name} by {$user->name}."
+            );
+        });
+
+        return response()->json([
+            'success' => true,
+            'message' => "Successfully assigned {$assignedCount} leads to {$telecaller->name}.",
+            'data' => [
+                'assigned_count' => $assignedCount,
+                'telecaller' => [
+                    'id' => $telecaller->id,
+                    'name' => $telecaller->name,
+                ],
             ],
         ]);
     }

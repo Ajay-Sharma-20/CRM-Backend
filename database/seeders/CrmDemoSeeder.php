@@ -3,6 +3,7 @@
 namespace Database\Seeders;
 
 use App\Models\AuditEvent;
+use App\Models\Business;
 use App\Models\CallLog;
 use App\Models\FollowUp;
 use App\Models\Lead;
@@ -199,24 +200,58 @@ class CrmDemoSeeder extends Seeder
             ['value' => ['Website', 'Referral', 'Cold Call', 'Campaign', 'Inbound', 'Social Media', 'Events']]
         );
 
+        // 6.5 Seed Demo Businesses for Tenant A
+        $realEstateBiz = Business::updateOrCreate(
+            ['tenant_id' => $tenantA->id, 'slug' => 'real-estate-luxury'],
+            [
+                'name' => 'Real Estate Luxury',
+                'description' => 'Premium residential and commercial property leads',
+                'custom_columns' => [
+                    ['key' => 'budget', 'label' => 'Budget', 'type' => 'text'],
+                    ['key' => 'property_type', 'label' => 'Property Type', 'type' => 'text'],
+                    ['key' => 'city', 'label' => 'Preferred City', 'type' => 'text'],
+                ],
+                'created_by' => $owner->id,
+            ]
+        );
+
+        $healthBiz = Business::updateOrCreate(
+            ['tenant_id' => $tenantA->id, 'slug' => 'health-insurance-corp'],
+            [
+                'name' => 'Health & Life Insurance',
+                'description' => 'Comprehensive family and corporate health policies',
+                'custom_columns' => [
+                    ['key' => 'policy_type', 'label' => 'Policy Type', 'type' => 'text'],
+                    ['key' => 'coverage', 'label' => 'Coverage Amount', 'type' => 'text'],
+                ],
+                'created_by' => $owner->id,
+            ]
+        );
+
         // 7. Seed Sample Leads for Tenant A
         $leadsData = [
             [
                 'first_name' => 'Rohan', 'last_name' => 'Mehta', 'phone' => '+919820011223',
                 'email' => 'rohan.mehta@nexuscorp.in', 'company' => 'Nexus Corp', 'job_title' => 'VP Technology',
                 'status' => 'Follow-up', 'source' => 'Website', 'owner_id' => $telecaller->id, 'team_id' => $alphaTeam->id,
+                'business_id' => $realEstateBiz->id,
+                'custom_fields' => ['budget' => '1.5 Cr', 'property_type' => '3 BHK Villa', 'city' => 'Gurgaon'],
                 'estimated_value' => 85000.00, 'notes' => 'Looking for 40 seat CRM deployment by next quarter.'
             ],
             [
                 'first_name' => 'Pooja', 'last_name' => 'Sharma', 'phone' => '+919811223344',
                 'email' => 'pooja@fintechinnovate.com', 'company' => 'Fintech Innovate', 'job_title' => 'Sales Director',
                 'status' => 'Interested', 'source' => 'Campaign', 'owner_id' => $telecaller->id, 'team_id' => $alphaTeam->id,
+                'business_id' => $healthBiz->id,
+                'custom_fields' => ['policy_type' => 'Family Floater', 'coverage' => '25 Lakhs'],
                 'estimated_value' => 120000.00, 'notes' => 'Wants automated telecalling logging and daily team metrics.'
             ],
             [
                 'first_name' => 'Arjun', 'last_name' => 'Kapoor', 'phone' => '+919833445566',
                 'email' => 'arjun.k@brightcloud.io', 'company' => 'BrightCloud Software', 'job_title' => 'Operations Head',
                 'status' => 'Contacted', 'source' => 'Cold Call', 'owner_id' => $telecaller->id, 'team_id' => $alphaTeam->id,
+                'business_id' => $realEstateBiz->id,
+                'custom_fields' => ['budget' => '85 Lakhs', 'property_type' => '2 BHK Apartment', 'city' => 'Pune'],
                 'estimated_value' => 45000.00, 'notes' => 'Brief discussion held. Asked to call back on Friday morning.'
             ],
             [

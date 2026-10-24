@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api\V1;
 
 use App\Http\Controllers\Controller;
+use App\Models\Business;
 use App\Models\CallLog;
 use App\Models\FollowUp;
 use App\Models\Lead;
@@ -33,6 +34,7 @@ class DashboardController extends Controller
 
     private function ownerAdminMetrics(int $tenantId): JsonResponse
     {
+        $totalBusinesses = Business::where('tenant_id', $tenantId)->count();
         $totalLeads = Lead::where('tenant_id', $tenantId)->count();
         $newLeadsThisWeek = Lead::where('tenant_id', $tenantId)
             ->where('created_at', '>=', Carbon::now()->startOfWeek())
@@ -79,6 +81,7 @@ class DashboardController extends Controller
             'data' => [
                 'role' => 'owner_admin',
                 'summary' => [
+                    'total_businesses' => $totalBusinesses,
                     'total_leads' => $totalLeads,
                     'new_leads_this_week' => $newLeadsThisWeek,
                     'assigned_leads' => $assignedLeads,

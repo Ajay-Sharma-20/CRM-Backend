@@ -14,6 +14,7 @@ class Lead extends Model
 
     protected $fillable = [
         'tenant_id',
+        'business_id',
         'first_name',
         'last_name',
         'phone',
@@ -28,12 +29,14 @@ class Lead extends Model
         'team_id',
         'estimated_value',
         'notes',
+        'custom_fields',
         'created_by',
         'updated_by',
     ];
 
     protected $casts = [
         'estimated_value' => 'decimal:2',
+        'custom_fields' => 'array',
     ];
 
     protected static function booted(): void
@@ -69,6 +72,11 @@ class Lead extends Model
     public function tenant(): BelongsTo
     {
         return $this->belongsTo(Tenant::class);
+    }
+
+    public function business(): BelongsTo
+    {
+        return $this->belongsTo(Business::class);
     }
 
     public function owner(): BelongsTo
