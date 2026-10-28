@@ -8,6 +8,7 @@ use App\Models\CallLog;
 use App\Models\FollowUp;
 use App\Models\Lead;
 use App\Models\Team;
+use App\Models\TenantSetting;
 use App\Models\User;
 use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
@@ -198,6 +199,28 @@ class DashboardController extends Controller
             ->where('due_at', '<', Carbon::now())
             ->count();
 
+        // 4 Key Categories
+        $freshLeadsCount = ($statusCounts['New'] ?? 0) + ($statusCounts['Assigned'] ?? 0);
+        $interestedCount = $statusCounts['Interested'] ?? 0;
+        $convertedCount = $statusCounts['Converted'] ?? 0;
+
+        // Strategic Priority Leads count (due today or overdue)
+        $priorityLeadsCount = FollowUp::where('tenant_id', $tenantId)
+            ->where('user_id', $user->id)
+            ->where('status', 'open')
+            ->whereDate('due_at', '<=', Carbon::today())
+            ->count();
+
+        // Fetch announcement broadcast from workspace settings
+        $announcementSetting = TenantSetting::where('tenant_id', $tenantId)->where('key', 'announcement')->first();
+        $announcement = $announcementSetting ? $announcementSetting->value : [
+            'badge' => 'BROADCAST',
+            'date' => Carbon::now()->format('M d'),
+            'message' => 'Ajay Ji Sudarshan Tehnologies welcomes you',
+            'author' => 'SRIJAN SIR',
+            'active' => true,
+        ];
+
         // Next eligible lead for calling
         $nextLead = Lead::where('tenant_id', $tenantId)
             ->where('owner_id', $user->id)
@@ -209,13 +232,24 @@ class DashboardController extends Controller
             'success' => true,
             'data' => [
                 'role' => 'telecaller',
+                'announcement' => $announcement,
+                'categories' => [
+                    'fresh_leads' => $freshLeadsCount,
+                    'calls_today' => $callsToday,
+                    'interested' => $interestedCount,
+                    'converted' => $convertedCount,
+                ],
                 'summary' => [
                     'my_assigned_leads' => $myTotalLeads,
+                    'fresh_leads' => $freshLeadsCount,
                     'calls_today' => $callsToday,
                     'connected_today' => $connectedToday,
+                    'interested' => $interestedCount,
+                    'converted' => $convertedCount,
                     'follow_ups_due_today' => $dueToday,
                     'follow_ups_overdue' => $overdue,
-                    'converted_leads' => $statusCounts['Converted'] ?? 0,
+                    'priority_leads_count' => $priorityLeadsCount,
+                    'converted_leads' => $convertedCount,
                 ],
                 'leads_by_status' => $statusCounts,
                 'next_lead' => $nextLead,

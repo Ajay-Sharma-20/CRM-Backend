@@ -16,12 +16,19 @@ class ReportController extends Controller
     public function leadsByStatus(Request $request): JsonResponse
     {
         $tenantId = $request->user()->tenant_id;
-        $statusCounts = Lead::where('tenant_id', $tenantId)
+        $user = $request->user();
+
+        $query = Lead::where('tenant_id', $tenantId);
+        if ($user->role?->slug === 'telecaller') {
+            $query->where('owner_id', $user->id);
+        }
+
+        $statusCounts = (clone $query)
             ->selectRaw('status, count(*) as count, sum(estimated_value) as total_value')
             ->groupBy('status')
             ->get();
 
-        $sourceCounts = Lead::where('tenant_id', $tenantId)
+        $sourceCounts = (clone $query)
             ->selectRaw('source, count(*) as count')
             ->groupBy('source')
             ->get();
@@ -38,23 +45,74 @@ class ReportController extends Controller
     public function callsByOutcome(Request $request): JsonResponse
     {
         $tenantId = $request->user()->tenant_id;
-        $outcomes = CallLog::where('tenant_id', $tenantId)
+        $user = $request->user();
+
+        $query = CallLog::where('tenant_id', $tenantId);
+        if ($user->role?->slug === 'telecaller') {
+            $query->where('user_id', $user->id);
+        }
+
+        $outcomes = (clone $query)
             ->selectRaw('outcome, count(*) as count, avg(duration_seconds) as avg_duration')
             ->groupBy('outcome')
             ->get();
 
-        $dailyCalls = CallLog::where('tenant_id', $tenantId)
-            ->where('called_at', '>=', Carbon::now()->subDays(14))
-            ->selectRaw('date(called_at) as call_date, count(*) as attempts')
-            ->groupBy('call_date')
-            ->orderBy('call_date', 'asc')
+        // 14-day daily progress with attempts, connected calls, and conversions
+        $recentCalls = (clone $query)
+            ->where('called_at', '>=', Carbon::now()->subDays(14)->startOfDay())
+            ->orderBy('called_at', 'desc')
             ->get();
+
+        $dailyProgress = [];
+        $connectedOutcomes = ['Connected', 'Interested', 'Follow-up Required', 'Demo/Meeting Scheduled', 'Converted'];
+
+        for ($i = 0; $i < 14; $i++) {
+            $dateObj = Carbon::now()->subDays($i);
+            $dateStr = $dateObj->toDateString();
+            $callsOnDate = $recentCalls->filter(fn($c) => Carbon::parse($c->called_at)->toDateString() === $dateStr);
+
+            $attempts = $callsOnDate->count();
+            $connected = $callsOnDate->whereIn('outcome', $connectedOutcomes)->count();
+            $converted = $callsOnDate->where('outcome', 'Converted')->count();
+            $totalSeconds = $callsOnDate->sum('duration_seconds');
+
+            if ($i === 0) {
+                $label = 'Today (' . $dateObj->format('M j') . ')';
+            } elseif ($i === 1) {
+                $label = 'Yesterday (' . $dateObj->format('M j') . ')';
+            } else {
+                $label = $dateObj->format('D, M j');
+            }
+
+            $dailyProgress[] = [
+                'date' => $dateStr,
+                'label' => $label,
+                'attempts' => $attempts,
+                'connected' => $connected,
+                'converted' => $converted,
+                'connect_rate' => $attempts > 0 ? round(($connected / $attempts) * 100, 1) : 0,
+                'talk_time_minutes' => round($totalSeconds / 60, 1),
+            ];
+        }
+
+        // Today's summary
+        $todayCalls = $recentCalls->filter(fn($c) => Carbon::parse($c->called_at)->toDateString() === Carbon::today()->toDateString());
+        $todayAttempts = $todayCalls->count();
+        $todayConnected = $todayCalls->whereIn('outcome', $connectedOutcomes)->count();
+        $todayConverted = $todayCalls->where('outcome', 'Converted')->count();
 
         return response()->json([
             'success' => true,
             'data' => [
                 'by_outcome' => $outcomes,
-                'daily_trends' => $dailyCalls,
+                'daily_progress' => $dailyProgress,
+                'summary_today' => [
+                    'attempts' => $todayAttempts,
+                    'connected' => $todayConnected,
+                    'converted' => $todayConverted,
+                    'connect_rate' => $todayAttempts > 0 ? round(($todayConnected / $todayAttempts) * 100, 1) : 0,
+                    'talk_time_minutes' => round($todayCalls->sum('duration_seconds') / 60, 1),
+                ],
             ],
         ]);
     }
@@ -62,9 +120,17 @@ class ReportController extends Controller
     public function teamPerformance(Request $request): JsonResponse
     {
         $tenantId = $request->user()->tenant_id;
+        $user = $request->user();
 
-        $telecallers = User::where('tenant_id', $tenantId)
-            ->whereHas('role', fn($q) => $q->whereIn('slug', ['telecaller', 'manager']))
+        $query = User::where('tenant_id', $tenantId);
+
+        if ($user->role?->slug === 'telecaller') {
+            $query->where('id', $user->id);
+        } else {
+            $query->whereHas('role', fn($q) => $q->whereIn('slug', ['telecaller', 'manager']));
+        }
+
+        $telecallers = $query
             ->withCount([
                 'ownedLeads as leads_assigned',
                 'ownedLeads as leads_converted' => fn($q) => $q->where('status', 'Converted'),

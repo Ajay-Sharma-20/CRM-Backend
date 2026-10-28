@@ -103,7 +103,7 @@ Route::prefix('v1')->group(function () {
         Route::prefix('reports')->group(function () {
             Route::get('/leads-by-status', [ReportController::class, 'leadsByStatus'])->middleware('permission:reports.view_own');
             Route::get('/calls-by-outcome', [ReportController::class, 'callsByOutcome'])->middleware('permission:reports.view_own');
-            Route::get('/team-performance', [ReportController::class, 'teamPerformance'])->middleware('permission:reports.view_team');
+            Route::get('/team-performance', [ReportController::class, 'teamPerformance'])->middleware('permission:reports.view_own');
         });
 
         // In-app Notifications
@@ -120,6 +120,7 @@ Route::prefix('v1')->group(function () {
         Route::prefix('settings')->group(function () {
             Route::get('/', [SettingController::class, 'index'])->middleware('permission:settings.view');
             Route::put('/', [SettingController::class, 'update'])->middleware('permission:settings.manage');
+            Route::post('/announcement', [SettingController::class, 'broadcastAnnouncement'])->middleware('permission:settings.manage');
         });
 
     });

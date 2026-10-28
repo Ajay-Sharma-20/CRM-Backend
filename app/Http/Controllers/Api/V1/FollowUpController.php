@@ -27,7 +27,9 @@ class FollowUpController extends Controller
 
         $view = $request->input('view', 'open'); // open, today, overdue, upcoming, completed, cancelled, all
 
-        if ($view === 'today') {
+        if ($view === 'priority') {
+            $query->where('status', 'open')->whereDate('due_at', '<=', Carbon::today());
+        } elseif ($view === 'today') {
             $query->where('status', 'open')->whereDate('due_at', Carbon::today());
         } elseif ($view === 'overdue') {
             $query->where('status', 'open')->where('due_at', '<', Carbon::now());

@@ -5,12 +5,15 @@ namespace App\Http\Controllers\Api\V1;
 use App\Http\Controllers\Controller;
 use App\Models\AuditEvent;
 use App\Models\Business;
+use App\Models\CallLog;
+use App\Models\FollowUp;
 use App\Models\Lead;
 use App\Models\LeadActivity;
 use App\Models\LeadNote;
 use App\Models\Notification;
 use App\Models\Team;
 use App\Models\User;
+use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -63,11 +66,35 @@ class LeadController extends Controller
         }
 
         // Filters
+        if ($category = $request->input('category')) {
+            if ($category === 'fresh') {
+                $query->whereIn('status', ['New', 'Assigned']);
+            } elseif ($category === 'calls_today') {
+                $query->whereHas('callLogs', function ($q) use ($user) {
+                    $q->where('user_id', $user->id)->whereDate('called_at', Carbon::today());
+                });
+            } elseif ($category === 'interested') {
+                $query->where('status', 'Interested');
+            } elseif ($category === 'converted') {
+                $query->where('status', 'Converted');
+            } elseif ($category === 'priority') {
+                $query->whereHas('followUps', function ($q) use ($user) {
+                    $q->where('user_id', $user->id)
+                      ->where('status', 'open')
+                      ->whereDate('due_at', '<=', Carbon::today());
+                });
+            }
+        }
+
         if ($businessId = $request->input('business_id')) {
             $query->where('business_id', $businessId);
         }
         if ($status = $request->input('status')) {
-            $query->where('status', $status);
+            if (strtolower($status) === 'fresh') {
+                $query->whereIn('status', ['New', 'Assigned']);
+            } else {
+                $query->where('status', $status);
+            }
         }
         if ($source = $request->input('source')) {
             $query->where('source', $source);
@@ -274,12 +301,28 @@ class LeadController extends Controller
             'estimated_value' => 'nullable|numeric|min:0',
             'notes' => 'nullable|string',
             'custom_fields' => 'nullable|array',
+            // Follow-up & Call parameters from Update Dialog
+            'schedule_follow_up' => 'nullable|boolean',
+            'follow_up_due_at' => 'nullable|date',
+            'follow_up_title' => 'nullable|string|max:150',
+            'follow_up_notes' => 'nullable|string',
+            'call_outcome' => 'nullable|string|max:100',
+            'call_duration' => 'nullable|integer|min:0',
         ]);
 
         $oldValues = $lead->toArray();
         $oldStatus = $lead->status;
 
-        $lead->update(array_merge($validated, ['updated_by' => $user->id]));
+        $leadFields = collect($validated)->except([
+            'schedule_follow_up',
+            'follow_up_due_at',
+            'follow_up_title',
+            'follow_up_notes',
+            'call_outcome',
+            'call_duration',
+        ])->toArray();
+
+        $lead->update(array_merge($leadFields, ['updated_by' => $user->id]));
 
         // Log status change if modified
         if (isset($validated['status']) && $validated['status'] !== $oldStatus) {
@@ -288,7 +331,7 @@ class LeadController extends Controller
                 'lead_id' => $lead->id,
                 'user_id' => $user->id,
                 'type' => 'status_change',
-                'description' => "Status changed from '{$oldStatus}' to '{$validated['status']}'.",
+                'description' => "Status changed from '{$oldStatus}' to '{$validated['status']}' by {$user->name}.",
             ]);
         }
 
@@ -299,6 +342,52 @@ class LeadController extends Controller
                 'lead_id' => $lead->id,
                 'user_id' => $user->id,
                 'content' => $validated['notes'],
+            ]);
+        }
+
+        // Create Call Log if outcome provided
+        if (!empty($validated['call_outcome'])) {
+            $callLog = CallLog::create([
+                'tenant_id' => $user->tenant_id,
+                'lead_id' => $lead->id,
+                'user_id' => $user->id,
+                'outcome' => $validated['call_outcome'],
+                'duration_seconds' => $validated['call_duration'] ?? null,
+                'notes' => $validated['notes'] ?? null,
+                'called_at' => Carbon::now(),
+            ]);
+
+            LeadActivity::create([
+                'tenant_id' => $user->tenant_id,
+                'lead_id' => $lead->id,
+                'user_id' => $user->id,
+                'type' => 'call_logged',
+                'description' => "Call logged by {$user->name}. Outcome: {$validated['call_outcome']}." . (!empty($validated['notes']) ? " Note: {$validated['notes']}" : ''),
+                'metadata' => [
+                    'call_log_id' => $callLog->id,
+                    'outcome' => $validated['call_outcome'],
+                ],
+            ]);
+        }
+
+        // Schedule Follow-up if requested
+        if (!empty($validated['follow_up_due_at'])) {
+            $followUp = FollowUp::create([
+                'tenant_id' => $user->tenant_id,
+                'lead_id' => $lead->id,
+                'user_id' => $user->id,
+                'title' => $validated['follow_up_title'] ?: "Follow-up for {$lead->first_name}",
+                'due_at' => $validated['follow_up_due_at'],
+                'status' => 'open',
+                'notes' => $validated['follow_up_notes'] ?: ($validated['notes'] ?? null),
+            ]);
+
+            LeadActivity::create([
+                'tenant_id' => $user->tenant_id,
+                'lead_id' => $lead->id,
+                'user_id' => $user->id,
+                'type' => 'follow_up_scheduled',
+                'description' => "Follow-up scheduled for " . Carbon::parse($validated['follow_up_due_at'])->format('M d, Y h:i A') . " by {$user->name}.",
             ]);
         }
 
@@ -316,7 +405,7 @@ class LeadController extends Controller
         return response()->json([
             'success' => true,
             'message' => 'Lead updated successfully.',
-            'data' => $lead->load(['owner', 'team', 'business']),
+            'data' => $lead->load(['owner', 'team', 'business', 'followUps', 'callLogs']),
         ]);
     }
 
