@@ -17,7 +17,13 @@ class UserController extends Controller
         $tenantId = $request->user()->tenant_id;
         $users = User::where('tenant_id', $tenantId)
             ->with(['role:id,name,slug', 'teams:id,name'])
-            ->withCount(['ownedLeads as leads_count', 'callLogs as calls_count'])
+            ->withCount([
+                'ownedLeads as leads_count',
+                'ownedLeads as due_leads_count' => function ($q) {
+                    $q->whereNotIn('status', ['Converted', 'Lost', 'Invalid']);
+                },
+                'callLogs as calls_count',
+            ])
             ->orderBy('name', 'asc')
             ->get();
 
